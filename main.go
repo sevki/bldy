@@ -5,212 +5,36 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"path/filepath"
-
-	"bldy.build/bldy/tap"
-	"bldy.build/build/builder"
-	"bldy.build/build/graph"
-	"bldy.build/build/project"
-
-	"runtime"
+	"bldy.build/bldy/cli"
 
 	"flag"
-
-	_ "bldy.build/build/targets/build"
-	_ "bldy.build/build/targets/cc"
-	_ "bldy.build/build/targets/golang"
-	_ "bldy.build/build/targets/harvey"
-	_ "bldy.build/build/targets/yacc"
-
-	"sevki.org/lib/prettyprint"
 )
 
 var (
 	buildVer = "version"
-	usage    = `usage: build target
-
-We require that you run this application inside a git project.
-All the targets are relative to the git project. 
-If you are in a subfoler we will traverse the parent folders until we hit a .git file.
-`
 )
 var (
 	disp    = flag.String("d", "tap", "only available display is tap currently")
 	display Display
-	l       = log.New(os.Stdout, "bldy: ", 0)
-	e       = log.New(os.Stderr, "bldy: ", 0)
 )
 
 func main() {
-	flag.Parse()
-
-	if len(flag.Args()) < 1 {
-		flag.Usage()
-		printUsage()
+	app := cli.App{}
+	app.Name = "bldy"
+	app.Version = buildVer
+	app.Commands = []cli.Command{
+		{
+			Name:    "build",
+			Aliases: []string{"b"},
+			Usage:   "build a target",
+			Action:  build,
+		},
+		{
+			Name:    "hash",
+			Aliases: []string{"h"},
+			Usage:   "hash a target",
+			Action:  hash,
+		},
 	}
-	target := flag.Args()[0]
-
-	switch *disp {
-	case "tap":
-		display = tap.New()
-	}
-	switch target {
-	case "version":
-		version()
-		return
-	case "force":
-		os.RemoveAll(builder.BLDYCACHE)
-		if len(flag.Args()) >= 2 {
-			target = flag.Args()[1]
-			execute(target)
-		}
-	case "clean":
-		target = flag.Args()[1]
-		clean(target)
-		return
-	case "query":
-		target = flag.Args()[1]
-		query(target)
-		return
-	case "installs":
-		target = flag.Args()[1]
-		installs(target)
-		return
-	case "hash":
-		target = flag.Args()[1]
-		hash(target)
-
-		return
-	default:
-		execute(target)
-	}
-}
-
-func printUsage() {
-	fmt.Fprintf(os.Stderr, usage)
-	os.Exit(1)
-
-}
-func version() {
-	l.Printf("Build %s", buildVer)
-	os.Exit(0)
-}
-
-func hash(t string) {
-	wd, err := os.Getwd()
-	if err != nil {
-		l.Fatal(err)
-	}
-	g := graph.New(wd, t)
-
-	if project.Root() == "" {
-		e.Println("You need to be in a git project.")
-		printUsage()
-	}
-	fmt.Printf("%x\n", g.Root.HashNode())
-}
-
-func query(t string) {
-	wd, err := os.Getwd()
-	if err != nil {
-		l.Fatal(err)
-	}
-	g := graph.New(wd, t)
-
-	if project.Root() == "" {
-		e.Println("You need to be in a git project.")
-		printUsage()
-	}
-	l.Println(prettyprint.AsJSON(g.Root.Target))
-}
-func installs(t string) {
-	wd, err := os.Getwd()
-	if err != nil {
-		l.Fatal(err)
-	}
-	g := graph.New(wd, t)
-
-	if project.Root() == "" {
-		e.Println("You need to be in a git project.")
-		printUsage()
-	}
-	l.Println(prettyprint.AsJSON(g.Root.Target.Installs()))
-}
-func clean(t string) {
-	wd, err := os.Getwd()
-	if err != nil {
-		l.Fatal(err)
-	}
-	g := graph.New(wd, t)
-
-	if project.Root() == "" {
-		e.Println("You need to be in a git project.")
-		printUsage()
-	}
-	target := g.Root.Target
-	for file, _ := range target.Installs() {
-		if err := os.Remove(filepath.Join(project.BuildOut(), file)); err != nil {
-			l.Println(err)
-		}
-	}
-}
-
-func execute(t string) {
-	wd, err := os.Getwd()
-	if err != nil {
-		l.Fatal(err)
-	}
-	g := graph.New(wd, t)
-
-	if project.Root() == "" {
-		e.Println("You need to be in a git project.")
-		printUsage()
-	}
-
-	if g.Root == nil {
-		l.Fatal("We couldn't find the root")
-	}
-	b := builder.New(g)
-	cpus := int(float32(runtime.NumCPU()) * 1.25)
-
-	// If the app hangs, there is a log.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt)
-	go func() {
-		<-sigs
-		f, _ := os.Create("/tmp/build-crash-log.json")
-		fmt.Fprintf(f, prettyprint.AsJSON(g.Root))
-		os.Exit(1)
-	}()
-
-	go display.Display(b.Updates, cpus)
-
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-
-	go b.Execute(ctx, cpus)
-	for {
-		select {
-		case done := <-b.Done:
-			if done.IsRoot {
-				display.Finish()
-				os.Exit(0)
-			}
-		case err := <-b.Error:
-			cancel()
-			display.Cancel()
-
-			fmt.Println(err)
-			os.Exit(1)
-		case <-b.Timeout:
-			log.Println("your build has timed out")
-		}
-
-	}
-
+	app.Main()
 }
